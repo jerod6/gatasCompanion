@@ -181,7 +181,7 @@ fun ConnectScreen(
             totalPackets = bridgeStatus.blePacketCount,
         )
 
-        if (bridgeStatus.gdl90BridgeEnabled) {
+        if (bridgeStatus.gdl90.enabled) {
             Gdl90BridgeCard(status = bridgeStatus)
         }
 
@@ -800,7 +800,8 @@ private fun LinkStatusCard(
 
 @Composable
 private fun Gdl90BridgeCard(status: BridgeStatus) {
-    val active = status.gdl90FramesBridged > 0
+    val gdl90 = status.gdl90
+    val active = gdl90.packetsSent > 0 && gdl90.lastError == null
     val textColor = if (active) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
 
     Card(
@@ -822,14 +823,19 @@ private fun Gdl90BridgeCard(status: BridgeStatus) {
                     label = "Phone",
                 ),
                 rightEndpoint = RouteEndpoint(
-                    label = "Localhost",
+                    label = "This device",
                 ),
                 connected = active,
                 statusColor = textColor,
-                packetCount = status.gdl90FramesBridged,
+                packetCount = gdl90.packetsSent,
             )
             Text(
-                text = if (active) "Connected via GDL90" else "Waiting for GDL90",
+                text = when (gdl90.state) {
+                    nl.rvt.gatas.companion.services.Gdl90State.Disabled -> "GDL90 forwarding disabled"
+                    nl.rvt.gatas.companion.services.Gdl90State.WaitingForFrames -> "Waiting for GDL90 frames from GATAS"
+                    nl.rvt.gatas.companion.services.Gdl90State.Sending -> "GDL90 packets sent to this device · UDP 4000"
+                    nl.rvt.gatas.companion.services.Gdl90State.Error -> "GDL90 forwarding error: ${gdl90.lastError ?: "Unknown error"}"
+                },
                 style = MaterialTheme.typography.bodyLarge,
                 color = textColor,
                 fontWeight = FontWeight.SemiBold
@@ -841,7 +847,7 @@ private fun Gdl90BridgeCard(status: BridgeStatus) {
             ) {
                 ProtocolActivityIndicator(
                     label = "GDL90",
-                    pulseTick = status.gdl90ActivityTick,
+                    pulseTick = gdl90.activityTick,
                     active = active,
                     color = textColor,
                 )

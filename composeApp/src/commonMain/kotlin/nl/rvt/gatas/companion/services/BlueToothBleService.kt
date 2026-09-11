@@ -14,6 +14,7 @@ import com.juul.kable.notify
 import com.juul.kable.characteristicOf
 import com.juul.kable.logs.Logging.Level.Warnings
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
@@ -34,7 +35,6 @@ import nl.rvantwisk.gatas.lib.extensions.CobsByteArray
 import nl.rvantwisk.gatas.lib.extensions.MessageType
 import nl.rvantwisk.gatas.lib.extensions.deserializeAircraftConfigurationV1
 import nl.rvantwisk.gatas.lib.extensions.deserializeAircraftConfigurationV2
-import nl.rvantwisk.gatas.lib.extensions.deserializeGDL90V1
 import nl.rvantwisk.gatas.lib.extensions.serializeSetIcaoAddressV1
 import nl.rvantwisk.gatas.lib.extensions.serializeSetWifiModeV1
 import nl.rvantwisk.gatas.lib.models.SetIcaoAddressV1
@@ -45,7 +45,6 @@ import nl.rvt.gatas.companion.bluetooth.GATAS_PRIMARY_DEVICE
 import nl.rvt.gatas.companion.bluetooth.GATAS_COBS_CHARACTERISTIC
 import nl.rvt.gatas.companion.bluetooth.GATAS_RXTX_CHARACTERISTIC
 import nl.rvt.gatas.companion.liveactivity.GatasLiveActivityBridge
-import nl.rvt.gatas.companion.stuff.toHex
 import nl.rvt.gatas.restorePeripheralIfPossible
 import nl.rvt.gatas.requestMtuIfSupported
 import kotlin.time.TimeSource
@@ -78,6 +77,8 @@ class BlueToothBleService constructor(
     private var connectedPeripheral: Peripheral? = null
     private var reconnectJob: Job? = null
     private var aircraftChangeJob: Job? = null
+    private var stopJob: Job? = null
+    private val gdl90Forwarder = Gdl90Forwarder(gdl90UdpBridgeService)
 
     companion object {
         private const val RECONNECT_SCAN_TIMEOUT_MILLIS = 5_000L
@@ -93,7 +94,7 @@ class BlueToothBleService constructor(
     }
 
     fun start() {
-        if (connectedPeripheral != null) {
+        if (_status.value.running || connectedPeripheral != null) {
             return
         }
 
@@ -104,16 +105,20 @@ class BlueToothBleService constructor(
                 running = true,
                 connecting = true,
                 bleConnected = false,
-                udpHealthy = true,
+                udpHealthy = false,
                 activeStream = null,
                 availableStreams = null,
-                gdl90BridgeEnabled = Gdl90BridgeSettings.isEnabled(),
+                gdl90 = initialGdl90Status(),
                 lastError = null,
                 lastEvent = "Searching for GATAS BLE device..."
             )
         }
 
+        val pendingStop = stopJob
         reconnectJob = scope.launch {
+            // UDP selectors and BLE observers from the previous run must be
+            // fully closed before this run creates replacement resources.
+            pendingStop?.join()
             while (true) {
                 try {
                     connectedPeripheral = connectAndObserve()
@@ -124,7 +129,7 @@ class BlueToothBleService constructor(
                                 connecting = false,
                                 bleConnected = true,
                                 activeStream = null,
-                                gdl90BridgeEnabled = Gdl90BridgeSettings.isEnabled(),
+                                gdl90 = initialGdl90Status(),
                                 lastEvent = "Bluetooth connected, waiting for frames..."
                             )
                         }
@@ -145,6 +150,7 @@ class BlueToothBleService constructor(
                     connectedPeripheral?.close()
                     connectedPeripheral = null
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     log.e {
                         "⚠️ Connection attempt failed: ${e.message}. Retrying in ${RECONNECT_RETRY_DELAY_MILLIS}ms..."
                     }
@@ -165,30 +171,37 @@ class BlueToothBleService constructor(
     }
 
     fun stop() {
+        if (!_status.value.running) return
+
         log.i { "Ble Service stopped" }
-        scope.launch {
-            aircraftChangeJob?.cancel()
-            aircraftChangeJob = null
-            reconnectJob?.cancel()
-            reconnectJob = null
+        val reconnectToStop = reconnectJob
+        val aircraftChangeToStop = aircraftChangeJob
+        reconnectJob = null
+        aircraftChangeJob = null
+
+        _status.update {
+            it.copy(
+                running = false,
+                connecting = false,
+                bleConnected = false,
+                udpHealthy = false,
+                activeStream = null,
+                availableStreams = null,
+                gdl90 = Gdl90BridgeStatus(),
+                lastEvent = "Bridge stopped",
+                lastError = null
+            )
+        }
+        GatasLiveActivityBridge.reset()
+
+        stopJob = scope.launch {
+            aircraftChangeToStop?.cancelAndJoin()
+            reconnectToStop?.cancelAndJoin()
             connectedPeripheral?.disconnect()
             connectedPeripheral?.close()
             connectedPeripheral = null
             udpRelayService.stop()
             gdl90UdpBridgeService.stop()
-            _status.update {
-                it.copy(
-                    running = false,
-                    connecting = false,
-                    bleConnected = false,
-                    udpHealthy = false,
-                    activeStream = null,
-                    availableStreams = null,
-                    lastEvent = "Bridge stopped",
-                    lastError = null
-                )
-            }
-            GatasLiveActivityBridge.reset()
         }
     }
 
@@ -436,6 +449,7 @@ class BlueToothBleService constructor(
                 log.w { "COBS characteristic is not notifiable; skipping observe()" }
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             log.e(e) { "⚠️ Error observing notifications" }
         }
     }
@@ -446,36 +460,39 @@ class BlueToothBleService constructor(
         label: String,
     ) {
         launch {
-            val frameBuffer = mutableListOf<Byte>()
+            val protocol = if (label == "NMEA") BleFrameProtocol.Nmea else BleFrameProtocol.Cobs
+            val frameAssembler = BleFrameAssembler(protocol)
 
             try {
                 peripheral.observe(characteristic)
                     .collect { chunk ->
-                        chunk.forEach { byte ->
-                            frameBuffer += byte
-                            if (isFrameComplete(label, byte)) {
-                                val payload = framePayload(label, frameBuffer)
-                                frameBuffer.clear()
-
-                                if (payload.isNotEmpty()) {
-                                    GatasLiveActivityBridge.recordPacket()
-                                    _status.update {
-                                        it.recordPacket(
-                                            linkSide = LinkSide.Ble,
-                                            label = label,
-                                            framesReceived = it.framesReceived + 1,
-                                            bytesReceived = it.bytesReceived + payload.size,
-                                            activeStream = label,
-                                            gatasActivityTick = it.gatasActivityTick + 1,
-                                            lastEvent = "$label frame received (${payload.size} bytes)"
-                                        )
-                                    }
-                                    handleFrame(peripheral, characteristic, label, payload)
-                                }
+                        val assembled = frameAssembler.accept(chunk)
+                        if (assembled.droppedFrames > 0) {
+                            log.w { "Dropped ${assembled.droppedFrames} oversized $label frame(s)" }
+                            if (label == "COBS") _status.update {
+                                it.copy(gdl90 = it.gdl90.copy(
+                                    droppedFrames = it.gdl90.droppedFrames + assembled.droppedFrames,
+                                ))
                             }
+                        }
+                        assembled.frames.forEach { payload ->
+                            GatasLiveActivityBridge.recordPacket()
+                            _status.update {
+                                it.recordPacket(
+                                    linkSide = LinkSide.Ble,
+                                    label = label,
+                                    framesReceived = it.framesReceived + 1,
+                                    bytesReceived = it.bytesReceived + payload.size,
+                                    activeStream = label,
+                                    gatasActivityTick = it.gatasActivityTick + 1,
+                                    lastEvent = "$label frame received (${payload.size} bytes)"
+                                )
+                            }
+                            handleFrame(peripheral, characteristic, label, payload)
                         }
                     }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 log.e(e) { "⚠️ Error observing $label notifications" }
             }
         }
@@ -487,7 +504,7 @@ class BlueToothBleService constructor(
         label: String,
         payload: ByteArray,
     ) {
-        log.d { "📩 $label BLE -> UDP ${payload.toHex()}" }
+        log.d { "Received $label BLE frame (${payload.size} bytes)" }
         maybeUpdateOwnshipConfiguration(label, payload)
         maybeBridgeGdl90Frame(label, payload)
 
@@ -517,6 +534,7 @@ class BlueToothBleService constructor(
         val response = try {
             udpRelayService.relay(payload)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             log.e(e) { "⚠️ UDP relay failed" }
             _status.update {
                 it.copy(
@@ -576,46 +594,16 @@ class BlueToothBleService constructor(
     }
 
     private suspend fun maybeBridgeGdl90Frame(label: String, payload: ByteArray) {
-        if (label != "COBS" || !Gdl90BridgeSettings.isEnabled()) {
-            return
-        }
+        if (label != "COBS") return
 
-        val type = runCatching {
-            nl.rvantwisk.gatas.lib.extensions.CobsByteArray(payload).peekAhead()
-        }.getOrNull()
+        val enabled = Gdl90BridgeSettings.isEnabled()
+        val result = gdl90Forwarder.forward(payload, enabled)
+        _status.update { BridgeStatusReducer.reduceGdl90(it, result) }
+    }
 
-        if (type != MessageType.GDL90_V1.value) {
-            return
-        }
-
-        val gdl90 = runCatching {
-            deserializeGDL90V1(payload)
-        }.getOrElse { e ->
-            log.w(e) { "Failed to decode GDL90 COBS frame" }
-            return
-        }
-
-        try {
-            gdl90UdpBridgeService.send(gdl90)
-            _status.update {
-                it.copy(
-                    serverActivityTick = it.serverActivityTick + 1,
-                    gdl90FramesBridged = it.gdl90FramesBridged + 1,
-                    gdl90BytesBridged = it.gdl90BytesBridged + gdl90.size,
-                    gdl90ActivityTick = it.gdl90ActivityTick + 1,
-                    gdl90BridgeEnabled = true,
-                    lastEvent = "GDL90 frame sent to localhost:4000 (${gdl90.size} bytes)"
-                )
-            }
-        } catch (e: Exception) {
-            log.e(e) { "GDL90 UDP bridge failed" }
-            _status.update {
-                it.copy(
-                    lastError = e.message ?: "GDL90 UDP bridge failed",
-                    lastEvent = "GDL90 UDP bridge failed"
-                )
-            }
-        }
+    private fun initialGdl90Status(): Gdl90BridgeStatus {
+        val enabled = Gdl90BridgeSettings.isEnabled()
+        return BridgeStatusReducer.initialGdl90(enabled)
     }
 
     private fun maybeUpdateOwnshipConfiguration(label: String, payload: ByteArray) {
@@ -691,7 +679,7 @@ class BlueToothBleService constructor(
             .chunked(maxWriteSize)
             .map { chunk -> chunk.toByteArray() }
             .forEach { chunk ->
-                log.i { "📤 UDP -> $label BLE ${chunk.toHex()}" }
+                log.d { "Sending $label BLE response chunk (${chunk.size} bytes)" }
                 peripheral.write(characteristic, chunk)
             }
         _status.update {
@@ -701,20 +689,6 @@ class BlueToothBleService constructor(
                 gatasActivityTick = it.gatasActivityTick + 1,
                 lastEvent = "BLE response sent (${payload.size} bytes)"
             )
-        }
-    }
-
-    private fun isFrameComplete(label: String, byte: Byte): Boolean {
-        return when (label) {
-            "NMEA" -> byte == '\n'.code.toByte()
-            else -> byte == 0.toByte()
-        }
-    }
-
-    private fun framePayload(label: String, frameBuffer: List<Byte>): ByteArray {
-        return when (label) {
-            "NMEA" -> frameBuffer.toByteArray()
-            else -> frameBuffer.dropLast(1).toByteArray()
         }
     }
 
@@ -873,14 +847,6 @@ class BlueToothBleService constructor(
                 )
             }
         }
-    }
-
-    private fun List<Byte>.toByteArray(): ByteArray {
-        val result = ByteArray(size)
-        forEachIndexed { index, value ->
-            result[index] = value
-        }
-        return result
     }
 
     private suspend fun observableCharacteristic(

@@ -24,10 +24,7 @@ data class BridgeStatus(
     val bleCobsPackets: Long = 0,
     val bleNmeaActivityTick: Long = 0,
     val bleCobsActivityTick: Long = 0,
-    val gdl90BridgeEnabled: Boolean = false,
-    val gdl90FramesBridged: Long = 0,
-    val gdl90BytesBridged: Long = 0,
-    val gdl90ActivityTick: Long = 0,
+    val gdl90: Gdl90BridgeStatus = Gdl90BridgeStatus(),
     val ownshipConfiguration: OwnshipAircraftConfiguration? = null,
     val aircraftChangeTargetIcaoAddress: Long? = null,
     val wifiModeChangeTarget: WifiMode? = null,
@@ -44,3 +41,24 @@ data class BridgeStatus(
     val blePacketCount: Long
         get() = bleNmeaPackets + bleCobsPackets
 }
+
+enum class Gdl90State {
+    Disabled,
+    WaitingForFrames,
+    Sending,
+    Error,
+}
+
+data class Gdl90BridgeStatus(
+    val enabled: Boolean = false,
+    val state: Gdl90State = Gdl90State.Disabled,
+    val framesReceived: Long = 0,
+    val packetsSent: Long = 0,
+    val bytesSent: Long = 0,
+    val decodeErrors: Long = 0,
+    val sendErrors: Long = 0,
+    val droppedFrames: Long = 0,
+    val activityTick: Long = 0,
+    val lastEvent: String = "GDL90 forwarding disabled",
+    val lastError: String? = null,
+)
