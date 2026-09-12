@@ -23,7 +23,9 @@ class Gdl90ForwarderTest {
 
         val result = forwarder.forward(serializeGDL90V1(expected).withoutDelimiter(), enabled = true)
 
-        assertEquals(Gdl90ForwardResult.Sent(expected.size), result)
+        val sent = assertIs<Gdl90ForwardResult.Sent>(result)
+        assertEquals(expected.size, sent.byteCount)
+        assertEquals(1, sent.messageSummary.otherMessages)
         assertContentEquals(expected, sender.payload)
     }
 

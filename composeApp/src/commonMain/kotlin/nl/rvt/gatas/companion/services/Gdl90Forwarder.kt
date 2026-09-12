@@ -26,7 +26,10 @@ interface Gdl90DatagramSender {
 sealed interface Gdl90ForwardResult {
     data object Disabled : Gdl90ForwardResult
     data object NotGdl90 : Gdl90ForwardResult
-    data class Sent(val byteCount: Int) : Gdl90ForwardResult
+    data class Sent(
+        val byteCount: Int,
+        val messageSummary: Gdl90MessageSummary = Gdl90MessageSummary(),
+    ) : Gdl90ForwardResult
     data class DecodeError(val message: String) : Gdl90ForwardResult
     data class SendError(val message: String) : Gdl90ForwardResult
 }
@@ -51,7 +54,10 @@ class Gdl90Forwarder(
 
         return runCatching {
             sender.send(gdl90)
-            Gdl90ForwardResult.Sent(gdl90.size)
+            Gdl90ForwardResult.Sent(
+                byteCount = gdl90.size,
+                messageSummary = summarizeGdl90Messages(gdl90),
+            )
         }.getOrElse { Gdl90ForwardResult.SendError(it.message ?: "GDL90 UDP send failed") }
     }
 

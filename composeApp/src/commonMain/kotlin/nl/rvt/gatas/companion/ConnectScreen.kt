@@ -159,6 +159,10 @@ fun ConnectScreen(
             nmeaTick = bridgeStatus.udpNmeaActivityTick,
             cobsTick = bridgeStatus.udpCobsActivityTick,
             totalPackets = bridgeStatus.udpPacketCount,
+            diagnosticsText = bridgeStatus.lastRelayRoundTripMillis?.let { roundTripMillis ->
+                "Relay diagnostics · queue ${bridgeStatus.lastRelayQueueDelayMillis ?: 0} ms · " +
+                    "round trip $roundTripMillis ms · drops ${bridgeStatus.relayQueueDrops}"
+            },
         )
 
         LinkStatusCard(
@@ -741,6 +745,7 @@ private fun LinkStatusCard(
     nmeaTick: Long,
     cobsTick: Long,
     totalPackets: Long,
+    diagnosticsText: String? = null,
 ) {
     val activeColor = if (connected) Color(0xFF57D48B) else Color(0xFFF44336)
     val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -773,6 +778,14 @@ private fun LinkStatusCard(
                 color = activeColor,
                 fontWeight = FontWeight.SemiBold
             )
+
+            diagnosticsText?.let { diagnostics ->
+                Text(
+                    text = diagnostics,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedColor,
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -840,6 +853,22 @@ private fun Gdl90BridgeCard(status: BridgeStatus) {
                 color = textColor,
                 fontWeight = FontWeight.SemiBold
             )
+            Text(
+                text = "GDL90 messages · traffic ${gdl90.trafficMessages} · " +
+                    "ownship ${gdl90.ownshipMessages} · heartbeat ${gdl90.heartbeatMessages} · " +
+                    "other ${gdl90.otherMessages}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (gdl90.lastTrafficIntervalMillis != null || gdl90.lastForwardDurationMillis != null) {
+                Text(
+                    text = "Timing · last traffic interval ${gdl90.lastTrafficIntervalMillis ?: 0} ms · " +
+                        "maximum ${gdl90.maximumTrafficIntervalMillis} ms · " +
+                        "forward ${gdl90.lastForwardDurationMillis ?: 0} ms",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center,
