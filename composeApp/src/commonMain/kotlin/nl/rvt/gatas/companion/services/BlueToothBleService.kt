@@ -44,6 +44,7 @@ import nl.rvantwisk.gatas.lib.models.SetIcaoAddressV1
 import nl.rvantwisk.gatas.lib.models.WifiMode
 import nl.rvt.gatas.companion.GaTasDevice
 import nl.rvt.gatas.companion.Gdl90BridgeSettings
+import nl.rvt.gatas.areDetailedDiagnosticsEnabled
 import nl.rvt.gatas.companion.bluetooth.GATAS_PRIMARY_DEVICE
 import nl.rvt.gatas.companion.bluetooth.GATAS_COBS_CHARACTERISTIC
 import nl.rvt.gatas.companion.bluetooth.GATAS_RXTX_CHARACTERISTIC
@@ -693,7 +694,11 @@ class BlueToothBleService constructor(
             return
         }
 
-        val responseSummary = summarizeRelayResponse(response)
+        val responseSummary = if (areDetailedDiagnosticsEnabled()) {
+            summarizeRelayResponse(response)
+        } else {
+            null
+        }
 
         _status.update {
             it.recordPacket(
@@ -720,17 +725,19 @@ class BlueToothBleService constructor(
         )
         val bleWriteMillis = bleWriteStartedAt.elapsedNow().inWholeMilliseconds
 
-        log.d {
-            "Relay cycle diagnostic: cycle=${workItem.sequence}, requestType=${workItem.messageType}, " +
-                "queueDelayMs=$queueDelayMillis, serverRoundTripMs=$roundTripMillis, " +
-                "responseBytes=${response.size}, responseFrames=${responseSummary.totalFrames}, " +
-                "serverTraffic=${responseSummary.aircraftPositions}, " +
-                "other=${responseSummary.otherMessages}, malformed=${responseSummary.malformedFrames}, " +
-                "bleWriteMs=$bleWriteMillis"
-        }
+        responseSummary?.let { summary ->
+            log.d {
+                "Relay cycle diagnostic: cycle=${workItem.sequence}, requestType=${workItem.messageType}, " +
+                    "queueDelayMs=$queueDelayMillis, serverRoundTripMs=$roundTripMillis, " +
+                    "responseBytes=${response.size}, responseFrames=${summary.totalFrames}, " +
+                    "serverTraffic=${summary.aircraftPositions}, " +
+                    "other=${summary.otherMessages}, malformed=${summary.malformedFrames}, " +
+                    "bleWriteMs=$bleWriteMillis"
+            }
 
-        if (workItem.messageType == MessageType.AIRCRAFT_POSITION_REQUEST_V1.value) {
-            recordRelayResponseSentToGatas(workItem.sequence, responseSummary)
+            if (workItem.messageType == MessageType.AIRCRAFT_POSITION_REQUEST_V1.value) {
+                recordRelayResponseSentToGatas(workItem.sequence, summary)
+            }
         }
     }
 
@@ -771,7 +778,9 @@ class BlueToothBleService constructor(
         }
         if (summary?.trafficReports?.let { it > 0 } == true) {
             lastGdl90TrafficMark = TimeSource.Monotonic.markNow()
-            correlateReturnedGdl90Traffic(summary, forwardDurationMillis)
+            if (areDetailedDiagnosticsEnabled()) {
+                correlateReturnedGdl90Traffic(summary, forwardDurationMillis)
+            }
         }
 
         _status.update { currentStatus ->
@@ -797,7 +806,7 @@ class BlueToothBleService constructor(
             }
         }
 
-        summary?.let {
+        summary?.takeIf { areDetailedDiagnosticsEnabled() }?.let {
             recordGdl90Diagnostics(
                 summary = it,
                 trafficIntervalMillis = trafficIntervalMillis,
@@ -826,7 +835,7 @@ class BlueToothBleService constructor(
         }
 
         pendingTrafficCycle?.let { previous ->
-            log.w {
+            log.d {
                 "Relay cycle correlation: cycle=${previous.sequence}, " +
                     "serverTraffic=${previous.serverAircraftPositions}, " +
                     "waitedMs=${previous.sentToGatasAt.elapsedNow().inWholeMilliseconds}, " +

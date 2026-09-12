@@ -13,6 +13,12 @@ Detailed diagnostic messages must:
 - never contain aircraft identifiers, callsigns, coordinates, altitudes, or complete protocol payloads;
 - remain useful when copied from Xcode without requiring a persistent log file.
 
+Release builds also skip relay-response summarization, diagnostic-window
+aggregation, and temporal cycle correlation. The diagnostic implementation is
+compiled and tested with the application, but its parsing, allocations, state,
+and output are inactive unless the binary is a debug build. Operational warning
+and error reporting remains active in releases.
+
 The application does not create diagnostic files. On iOS, collect the messages from Xcode's debug console while running the `iosApp` scheme with the `Debug` build configuration.
 
 ## End-to-end traffic path
@@ -142,4 +148,4 @@ Tests cover GDL90 byte preservation and message classification, malformed and tr
 
 The production fixes, status counters, privacy-preserving summaries, correlation logic, and tests should remain part of normal development rather than being abandoned on a diagnostic-only branch. They protect behavior that previously failed and provide evidence when the same multi-stage path regresses.
 
-The detailed log output remains debug-only. If runtime profiling later shows meaningful overhead, the relay-response summarization and temporal correlation can be placed behind a compile-time diagnostic flag without removing their tests or the underlying transport separation.
+Detailed parsing, correlation, and log output are enabled only in debug builds. The code and tests remain in the normal development line so the diagnostics can be enabled immediately when the multi-stage traffic path needs to be investigated again.

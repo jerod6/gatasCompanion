@@ -4,6 +4,7 @@ import co.touchlab.kermit.Logger
 import co.touchlab.kermit.Severity
 
 private var loggingConfigured = false
+private var detailedDiagnosticsEnabled = false
 
 fun initializeLogging() {
     if (loggingConfigured) {
@@ -14,9 +15,18 @@ fun initializeLogging() {
     // forwarding delays are intentionally logged at Debug severity. Keep those
     // measurements available to developers while preventing verbose protocol
     // activity from being emitted by production builds.
-    Logger.setMinSeverity(if (isDebugBuild()) Severity.Debug else Severity.Warn)
+    detailedDiagnosticsEnabled = isDebugBuild()
+    Logger.setMinSeverity(if (detailedDiagnosticsEnabled) Severity.Debug else Severity.Warn)
     loggingConfigured = true
 }
+
+/**
+ * Returns whether privacy-preserving timing and protocol summaries may run.
+ *
+ * Callers use this in addition to the logger severity so release builds avoid
+ * the parsing, allocations, and correlation state required only for diagnosis.
+ */
+internal fun areDetailedDiagnosticsEnabled(): Boolean = detailedDiagnosticsEnabled
 
 /**
  * Returns whether the current application binary was built for debugging.
