@@ -127,10 +127,6 @@ class BlueToothBleService constructor(
         // control messages while allowing a newer position request to supersede
         // an older one.
         private const val RELAY_QUEUE_CAPACITY = 1
-        private val RELAYED_COBS_MESSAGE_TYPES = setOf(
-            MessageType.AIRCRAFT_POSITION_REQUEST_V1.value,
-            MessageType.AIRCRAFT_CONFIGURATIONS_V2.value,
-        )
     }
 
     fun start() {
@@ -572,7 +568,7 @@ class BlueToothBleService constructor(
             _status.update {
                 it.copy(
                     activeStream = label,
-                    lastEvent = "Skipped $label relay for unsupported message type ${relayDecision.messageType}"
+                    lastEvent = "Skipped $label relay for local-only or invalid message type ${relayDecision.messageType}"
                 )
             }
             return
@@ -739,24 +735,6 @@ class BlueToothBleService constructor(
                 recordRelayResponseSentToGatas(workItem.sequence, summary)
             }
         }
-    }
-
-    private fun relayDecision(label: String, payload: ByteArray): RelayDecision {
-        if (label != "COBS") {
-            return RelayDecision(shouldRelay = false, messageType = null)
-        }
-
-        val type = runCatching {
-            nl.rvantwisk.gatas.lib.extensions.CobsByteArray(payload).peekAhead()
-        }.getOrElse { error ->
-            log.w(error) { "Failed to decode COBS message type; skipping relay to gatasServer" }
-            return RelayDecision(shouldRelay = false, messageType = null)
-        }
-
-        return RelayDecision(
-            shouldRelay = type in RELAYED_COBS_MESSAGE_TYPES,
-            messageType = type,
-        )
     }
 
     private suspend fun maybeBridgeGdl90Frame(label: String, payload: ByteArray) {
@@ -1219,9 +1197,20 @@ class BlueToothBleService constructor(
         }
     }
 
-    private data class RelayDecision(
-        val shouldRelay: Boolean,
-        val messageType: Int?,
-    )
+}
 
+internal data class RelayDecision(val shouldRelay: Boolean, val messageType: Int?)
+
+internal fun relayDecision(label: String, payload: ByteArray): RelayDecision {
+    if (label != "COBS" || payload.size < 2 || (payload[0].toInt() and 0xff) < 2) {
+        return RelayDecision(shouldRelay = false, messageType = null)
+    }
+
+    // A nonzero COBS message type is the first byte after the initial code byte.
+    // Reading it directly keeps routing independent of the payload format and size.
+    val type = payload[1].toInt() and 0xff
+    return RelayDecision(
+        shouldRelay = type != MessageType.GDL90_V1.value,
+        messageType = type,
+    )
 }
