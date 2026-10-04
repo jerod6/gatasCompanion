@@ -45,7 +45,8 @@ fun summarizeRelayResponse(payload: ByteArray): RelayResponseSummary {
         }
         when (messageType) {
             MessageType.AIRCRAFT_POSITION_TYPE_V1.value,
-            MessageType.AIRCRAFT_POSITION_TYPE_V2.value -> aircraftPositions++
+            MessageType.AIRCRAFT_POSITION_TYPE_V2.value,
+            MessageType.AIRCRAFT_POSITION_TYPE_V3.value -> aircraftPositions++
             null -> malformedFrames++
             else -> otherMessages++
         }

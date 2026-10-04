@@ -68,12 +68,6 @@ class BlueToothBleService constructor(
         Ble,
     }
 
-    private enum class RelayEnqueueResult {
-        Accepted,
-        ReplacedStalePosition,
-        Rejected,
-    }
-
     private data class RelayWorkItem(
         val sequence: Long,
         val peripheral: Peripheral,
@@ -586,7 +580,7 @@ class BlueToothBleService constructor(
         val enqueueResult = if (relayQueue.trySend(workItem).isSuccess) {
             RelayEnqueueResult.Accepted
         } else {
-            replaceStalePositionRequest(relayQueue, workItem)
+            replaceStalePositionRequest(relayQueue, workItem) { it.messageType }
         }
 
         if (enqueueResult != RelayEnqueueResult.Rejected) {
@@ -605,36 +599,6 @@ class BlueToothBleService constructor(
                     lastEvent = "Relay queue full; dropped $label request",
                 )
             }
-        }
-    }
-
-    /**
-     * Applies a latest-position-wins policy without discarding a queued control
-     * message. The COBS observer is the only producer, so removing and restoring
-     * one pending element is deterministic while the relay worker is the consumer.
-     */
-    private fun replaceStalePositionRequest(
-        relayQueue: Channel<RelayWorkItem>,
-        newWorkItem: RelayWorkItem,
-    ): RelayEnqueueResult {
-        val pending = relayQueue.tryReceive().getOrNull()
-            ?: return if (relayQueue.trySend(newWorkItem).isSuccess) {
-                RelayEnqueueResult.Accepted
-            } else {
-                RelayEnqueueResult.Rejected
-            }
-
-        return if (pending.messageType == MessageType.AIRCRAFT_POSITION_REQUEST_V1.value) {
-            if (relayQueue.trySend(newWorkItem).isSuccess) {
-                RelayEnqueueResult.ReplacedStalePosition
-            } else {
-                RelayEnqueueResult.Rejected
-            }
-        } else {
-            // A configuration/control message must not be silently displaced by
-            // a periodic position request. Restore it and report the new drop.
-            check(relayQueue.trySend(pending).isSuccess)
-            RelayEnqueueResult.Rejected
         }
     }
 
@@ -731,7 +695,7 @@ class BlueToothBleService constructor(
                     "bleWriteMs=$bleWriteMillis"
             }
 
-            if (workItem.messageType == MessageType.AIRCRAFT_POSITION_REQUEST_V1.value) {
+            if (isAircraftPositionRequest(workItem.messageType)) {
                 recordRelayResponseSentToGatas(workItem.sequence, summary)
             }
         }

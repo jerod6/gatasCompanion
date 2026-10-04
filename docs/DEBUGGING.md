@@ -59,11 +59,20 @@ The periodic `GDL90 diagnostic` line includes the aggregation window, category c
 
 Internet relay calls do not execute inside the BLE notification collector. A bounded channel feeds a separate ordered worker. Periodic position requests use a latest-position-wins policy when the queue is full; configuration and control messages are not silently displaced.
 
+Both legacy V1 position requests (type 2) and versioned V2 requests (type 10)
+are eligible for replacement when stale. A new configuration/control message
+may also replace a stale position request, but a queued control message is
+preserved; if it fills the queue, the incoming request is rejected and counted.
+
 The `UDP relay diagnostic` line records failures, empty responses, queue delay, and server round-trip time. This shows whether a slow Internet request delayed later relay work. It is independent of the local GDL90-to-EFB socket.
 
 ## Relay-cycle correlation
 
 Each relayed COBS request receives a local sequence number. `summarizeRelayResponse()` validates the COBS pointer chain, examines only the first decoded byte of each frame, and counts aircraft-position, other, and malformed frames.
+
+Aircraft-position responses V1, V2, and V3 (types 1, 8, and 9) count as
+`serverTraffic`. Correlation runs for both V1 and V2 position requests (types
+2 and 10), including the V3 responses requested by firmware 3.4.1-rc8.
 
 For position requests, the following debug lines describe the full round trip:
 
